@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Data (local artifacts)
+data/
+test_data/
+*.db
+
+# Media files
+*.mp4
+*.avi
+*.mov
+*.jpg
+*.jpeg
+*.png
+!tests/fixtures/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Type checking
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
