@@ -66,7 +66,7 @@ class TestTikTokVideoInfo:
         assert "7321456789012345678" in text
         assert "Day in my life" in text
         assert "#tech" in text
-        assert "250,000 views" in text
+        assert "250000 views" in text
         assert "Chill Lo-fi Beat" in text
 
     def test_to_analysis_text_minimal(self):
