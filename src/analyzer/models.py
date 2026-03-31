@@ -6,7 +6,16 @@ Defines structures for video analysis results and user profiles.
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _coerce_to_str(v: object) -> str:
+    """Coerce list/dict values to string. Claude sometimes returns lists for string fields."""
+    if isinstance(v, list):
+        return ", ".join(str(item) for item in v)
+    if isinstance(v, dict):
+        return str(v)
+    return v
 
 
 class FrameAnalysis(BaseModel):
@@ -72,6 +81,17 @@ class VideoAnalysisResult(BaseModel):
     views: int = Field(default=0, description="View count")
     likes: int = Field(default=0, description="Like count")
     comments: int = Field(default=0, description="Comment count")
+
+    # Validators: Claude sometimes returns lists for string fields
+    @field_validator(
+        "content_summary", "content_category", "production_quality",
+        "editing_style", "visual_aesthetic", "music_mood",
+        "target_audience", "tone", "language",
+        mode="before",
+    )
+    @classmethod
+    def coerce_str_fields(cls, v: object) -> str:
+        return _coerce_to_str(v)
 
 
 class ContentPattern(BaseModel):
@@ -178,6 +198,17 @@ class UserProfile(BaseModel):
         le=1.0,
         description="Confidence in the profile accuracy (0-1)",
     )
+
+    # Validators: Claude sometimes returns lists for string fields
+    @field_validator(
+        "profile_summary", "creator_type", "niche", "estimated_influence_tier",
+        "content_format", "posting_style", "primary_audience_description",
+        "engagement_strategy", "community_building", "growth_potential",
+        mode="before",
+    )
+    @classmethod
+    def coerce_str_fields(cls, v: object) -> str:
+        return _coerce_to_str(v)
 
     def to_context_string(self) -> str:
         """
