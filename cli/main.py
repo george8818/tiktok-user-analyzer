@@ -54,10 +54,13 @@ def cli(ctx, debug: bool):
 @click.option("--max-videos", "-n", default=2, help="Max videos to analyze (1-5)")
 @click.option("--mock", is_flag=True, help="Use mock data for testing")
 @click.option("--chat", is_flag=True, help="Start interactive chat after analysis")
+@click.option("--headful", is_flag=True, help="Show browser window (helps bypass anti-bot)")
 @click.pass_context
-def analyze(ctx, username: str, max_videos: int, mock: bool, chat: bool):
+def analyze(ctx, username: str, max_videos: int, mock: bool, chat: bool, headful: bool):
     """Analyze a TikTok user's profile and content."""
     settings = ctx.obj["settings"]
+    if headful:
+        settings.scraper.headless = False
 
     console.print(Panel(
         f"[bold blue]Analyzing @{username.lstrip('@')}[/bold blue]\n"

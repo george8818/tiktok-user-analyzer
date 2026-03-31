@@ -90,7 +90,7 @@ class TikTokScraper:
         await self._close_browser()
 
     async def _init_browser(self) -> None:
-        """Initialize the Playwright browser instance."""
+        """Initialize the Playwright browser instance with stealth settings."""
         from playwright.async_api import async_playwright
 
         self._playwright = await async_playwright().start()
@@ -102,19 +102,55 @@ class TikTokScraper:
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--window-size=1920,1080",
             ],
         )
 
         self._context = await self._browser.new_context(
-            user_agent=self.USER_AGENT,
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
-            timezone_id="America/New_York",
+            timezone_id="America/Los_Angeles",
+            java_script_enabled=True,
+            bypass_csp=True,
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "sec-ch-ua": '"Not A(Brand";v="8", "Chromium";v="131", "Google Chrome";v="131"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"macOS"',
+            },
         )
 
-        # Block unnecessary resources for faster scraping
+        # Stealth: remove webdriver flag and inject anti-detection
+        await self._context.add_init_script("""
+            // Remove webdriver property
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            // Fake plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            // Fake languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+            // Fake Chrome runtime
+            window.chrome = { runtime: {} };
+            // Remove automation indicators
+            delete window.__playwright;
+            delete window.__pw_manual;
+        """)
+
+        # Block heavy media to speed up loading
         await self._context.route(
-            re.compile(r"\.(mp4|webm|ogg|mp3|wav|flac)$"),
+            re.compile(r"\.(mp4|webm|ogg|mp3|wav|flac|m3u8|ts)(\?.*)?$"),
             lambda route: route.abort(),
         )
 
@@ -148,17 +184,6 @@ class TikTokScraper:
         """
         Navigate to a URL and extract the SIGI_STATE or __UNIVERSAL_DATA_FOR_REHYDRATION__
         JSON data embedded in TikTok pages.
-
-        Args:
-            url: The TikTok URL to scrape
-
-        Returns:
-            Dictionary of extracted page data
-
-        Raises:
-            ProfileNotFoundError: If the profile doesn't exist
-            RateLimitError: If rate limited by TikTok
-            ScraperError: For other scraping failures
         """
         if not self._context:
             raise ScraperError("Browser not initialized. Use 'async with' context manager.")
@@ -176,8 +201,17 @@ class TikTokScraper:
             if response and response.status >= 400:
                 raise ScraperError(f"HTTP error {response.status} for {url}")
 
-            # Wait for page content to load
-            await page.wait_for_load_state("networkidle", timeout=self.timeout)
+            # Dismiss cookie banners / CAPTCHA overlays
+            await self._dismiss_overlays(page)
+
+            # Wait for page content — try multiple strategies
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                logger.debug("networkidle_timeout, continuing anyway")
+
+            # Extra wait for JS rendering
+            await asyncio.sleep(2)
 
             # Try to extract embedded JSON data
             page_data = await self._extract_page_json(page)
@@ -186,12 +220,43 @@ class TikTokScraper:
                 # Fallback: try to extract from HTML directly
                 page_data = await self._extract_from_html(page)
 
-            return page_data
+            if not page_data:
+                # Last resort: dump page content for debugging
+                title = await page.title()
+                content_len = len(await page.content())
+                logger.warning(
+                    "no_data_extracted",
+                    url=url,
+                    title=title,
+                    html_length=content_len,
+                )
+
+            return page_data or {}
 
         finally:
             await page.close()
-            # Respect rate limiting
             await asyncio.sleep(self.request_delay)
+
+    async def _dismiss_overlays(self, page) -> None:
+        """Try to dismiss cookie banners and other overlays."""
+        dismiss_selectors = [
+            'button[id*="cookie"]',
+            'button[class*="cookie"]',
+            'button[data-e2e="modal-close-inner-button"]',
+            '[class*="DenyButton"]',
+            'button:has-text("Decline")',
+            'button:has-text("Reject")',
+            'button:has-text("Accept")',
+        ]
+        for selector in dismiss_selectors:
+            try:
+                btn = await page.query_selector(selector)
+                if btn and await btn.is_visible():
+                    await btn.click()
+                    await asyncio.sleep(0.5)
+                    logger.debug("dismissed_overlay", selector=selector)
+            except Exception:
+                pass
 
     async def _extract_page_json(self, page) -> Optional[dict]:
         """
@@ -226,46 +291,85 @@ class TikTokScraper:
         data = {}
 
         try:
-            # Extract username
+            # Extract username from URL or title
             title = await page.title()
+            current_url = page.url
             if title:
                 match = re.search(r"@(\w+)", title)
                 if match:
                     data["username"] = match.group(1)
+            if not data.get("username") and current_url:
+                match = re.search(r"@(\w[\w.]+)", current_url)
+                if match:
+                    data["username"] = match.group(1)
 
-            # Extract bio
-            bio_el = await page.query_selector('[data-e2e="user-bio"]')
-            if bio_el:
-                data["bio"] = await bio_el.inner_text()
+            # Extract bio — try multiple selectors
+            bio_selectors = [
+                '[data-e2e="user-bio"]',
+                'h2[data-e2e="user-bio"]',
+                '[class*="SpanUserBio"]',
+                '[class*="user-bio"]',
+            ]
+            for sel in bio_selectors:
+                el = await page.query_selector(sel)
+                if el:
+                    data["bio"] = await el.inner_text()
+                    break
 
             # Extract display name
-            name_el = await page.query_selector('[data-e2e="user-subtitle"]')
-            if not name_el:
-                name_el = await page.query_selector('h1[data-e2e="user-title"]')
-            if name_el:
-                data["display_name"] = await name_el.inner_text()
+            name_selectors = [
+                'h1[data-e2e="user-title"]',
+                '[data-e2e="user-subtitle"]',
+                'h2[data-e2e="user-subtitle"]',
+                '[class*="SpanNickName"]',
+                'span[class*="UserTitle"]',
+            ]
+            for sel in name_selectors:
+                el = await page.query_selector(sel)
+                if el:
+                    data["display_name"] = await el.inner_text()
+                    break
 
-            # Extract stats
-            stats_selectors = {
-                "following": '[data-e2e="following-count"]',
-                "followers": '[data-e2e="followers-count"]',
-                "likes": '[data-e2e="likes-count"]',
-            }
-            for stat_name, selector in stats_selectors.items():
+            # Extract stats — try multiple selector patterns
+            stat_configs = [
+                ("following", '[data-e2e="following-count"]'),
+                ("followers", '[data-e2e="followers-count"]'),
+                ("likes", '[data-e2e="likes-count"]'),
+                ("following", '[class*="CountFollowing"]'),
+                ("followers", '[class*="CountFollowers"]'),
+                ("likes", '[class*="CountLikes"]'),
+            ]
+            for stat_name, selector in stat_configs:
+                if f"stats_{stat_name}" in data:
+                    continue
                 el = await page.query_selector(selector)
                 if el:
                     text = await el.inner_text()
                     data[f"stats_{stat_name}"] = self._parse_stat_number(text)
 
-            # Extract video links
-            video_links = await page.query_selector_all('[data-e2e="user-post-item"] a')
+            # Extract video links — try multiple patterns
+            video_selectors = [
+                '[data-e2e="user-post-item"] a',
+                '[data-e2e="user-post-item-list"] a',
+                'div[class*="DivItemContainer"] a',
+                'div[class*="VideoFeed"] a[href*="/video/"]',
+                'a[href*="/video/"]',
+            ]
             data["video_urls"] = []
-            for link in video_links[:10]:  # Limit to 10 videos
-                href = await link.get_attribute("href")
-                if href:
-                    data["video_urls"].append(href)
+            for sel in video_selectors:
+                links = await page.query_selector_all(sel)
+                for link in links[:10]:
+                    href = await link.get_attribute("href")
+                    if href and "/video/" in href:
+                        if href.startswith("/"):
+                            href = f"https://www.tiktok.com{href}"
+                        if href not in data["video_urls"]:
+                            data["video_urls"].append(href)
+                if data["video_urls"]:
+                    break
 
-            logger.info("extracted_from_html", fields=list(data.keys()))
+            logger.info("extracted_from_html", fields=list(data.keys()),
+                       videos_found=len(data.get("video_urls", [])))
 
         except Exception as e:
             logger.warning("html_extraction_error", error=str(e))
