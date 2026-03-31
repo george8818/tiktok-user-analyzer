@@ -17,6 +17,7 @@ from typing import Optional
 from src.logging_config import get_logger
 from src.config import Settings
 from src.scraper.tiktok_scraper import TikTokScraper, MockTikTokScraper
+from src.scraper.ytdlp_scraper import YtDlpScraper
 from src.scraper.video_downloader import VideoDownloader
 from src.scraper.frame_extractor import FrameExtractor
 from src.scraper.models import ScrapedData
@@ -144,17 +145,19 @@ class AnalysisPipeline:
         """Step 1: Scrape user profile and video metadata."""
         logger.info("step_scraping", username=username)
 
-        scraper_cls = MockTikTokScraper if use_mock else TikTokScraper
-        scraper_kwargs = {
-            "browser_type": self.settings.scraper.browser_type,
-            "headless": self.settings.scraper.headless,
-            "timeout": self.settings.scraper.timeout // 1000,
-            "max_retries": self.settings.scraper.max_retries,
-            "request_delay": self.settings.scraper.request_delay,
-        }
-
-        async with scraper_cls(**scraper_kwargs) as scraper:
-            data = await scraper.scrape_user(username, max_videos=max_videos)
+        if use_mock:
+            scraper_kwargs = {
+                "request_delay": self.settings.scraper.request_delay,
+            }
+            async with MockTikTokScraper(**scraper_kwargs) as scraper:
+                data = await scraper.scrape_user(username, max_videos=max_videos)
+        else:
+            # Use yt-dlp based scraper (much more reliable than Playwright)
+            scraper = YtDlpScraper(
+                request_delay=self.settings.scraper.request_delay,
+            )
+            async with scraper:
+                data = await scraper.scrape_user(username, max_videos=max_videos)
 
         if not data.user:
             raise PipelineError(f"Failed to scrape user: @{username}")

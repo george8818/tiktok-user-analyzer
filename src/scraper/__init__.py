@@ -11,11 +11,13 @@ from src.scraper.models import (
     TikTokVideoStats,
 )
 from src.scraper.tiktok_scraper import TikTokScraper
+from src.scraper.ytdlp_scraper import YtDlpScraper
 from src.scraper.video_downloader import VideoDownloader
 from src.scraper.frame_extractor import FrameExtractor
 
 __all__ = [
     "TikTokScraper",
+    "YtDlpScraper",
     "VideoDownloader",
     "FrameExtractor",
     "ScrapedData",
